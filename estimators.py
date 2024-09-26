@@ -31,7 +31,7 @@ def logmeanexp_nodiag(x, dim=None, device='cuda'):
     return logsumexp - torch.log(torch.tensor(num_elem)).to(device)
 
 
-def tuba_lower_bound(scores, log_baseline=None):
+def tuba_lower_bound(scores, log_baseline=None, device='cuda'):
     if log_baseline is not None:
         scores -= log_baseline[:, None]
 
@@ -41,15 +41,15 @@ def tuba_lower_bound(scores, log_baseline=None):
 
     # Second term is an expectation over samples from the marginal,
     # which are the off-diagonal elements of the scores matrix.
-    marg_term = logmeanexp_nodiag(scores).exp()
+    marg_term = logmeanexp_nodiag(scores, device=device).exp()
     return 1. + joint_term - marg_term
 
 
-def nwj_lower_bound(scores):
-    return tuba_lower_bound(scores - 1.)
+def nwj_lower_bound(scores, device="cuda"):
+    return tuba_lower_bound(scores - 1., device=device)
 
 
-def infonce_lower_bound(scores):
+def infonce_lower_bound(scores, device="cuda"):
     nll = scores.diag().mean() - scores.logsumexp(dim=1)
     # Alternative implementation:
     # nll = -tf.nn.sparse_softmax_cross_entropy_with_logits(logits=scores, labels=tf.range(batch_size))
@@ -68,9 +68,9 @@ def js_fgan_lower_bound(f):
     return first_term - second_term
 
 
-def js_lower_bound(f):
+def js_lower_bound(f, device='cuda'):
     """Obtain density ratio from JS lower bound then output MI estimate from NWJ bound."""
-    nwj = nwj_lower_bound(f)
+    nwj = nwj_lower_bound(f, device=device)
     js = js_fgan_lower_bound(f)
 
     with torch.no_grad():
@@ -79,23 +79,23 @@ def js_lower_bound(f):
     return js + nwj_js
 
 
-def dv_upper_lower_bound(f):
+def dv_upper_lower_bound(f,device="cuda"):
     """
     Donsker-Varadhan lower bound, but upper bounded by using log outside. 
     Similar to MINE, but did not involve the term for moving averages.
     """
     first_term = f.diag().mean()
-    second_term = logmeanexp_nodiag(f)
+    second_term = logmeanexp_nodiag(f,device=device)
 
     return first_term - second_term
 
 
-def mine_lower_bound(f, buffer=None, momentum=0.9):
+def mine_lower_bound(f, buffer=None, momentum=0.9,device="cuda"):
     """
     MINE lower bound based on DV inequality. 
     """
     if buffer is None:
-        buffer = torch.tensor(1.0).cuda()
+        buffer = torch.tensor(1.0).to(device)
     first_term = f.diag().mean()
 
     buffer_update = logmeanexp_nodiag(f).exp()
@@ -110,12 +110,12 @@ def mine_lower_bound(f, buffer=None, momentum=0.9):
     return first_term - second_term - third_term_grad + third_term_no_grad, buffer_update
 
 
-def smile_lower_bound(f, clip=None):
+def smile_lower_bound(f, clip=None, device="cuda"):
     if clip is not None:
         f_ = torch.clamp(f, -clip, clip)
     else:
         f_ = f
-    z = logmeanexp_nodiag(f_, dim=(0, 1))
+    z = logmeanexp_nodiag(f_, dim=(0, 1), device=device)
     dv = f.diag().mean() - z
 
     js = js_fgan_lower_bound(f)
@@ -127,7 +127,8 @@ def smile_lower_bound(f, clip=None):
 
 
 def estimate_mutual_information(estimator, x, y, critic_fn,
-                                baseline_fn=None, alpha_logit=None, **kwargs):
+                                baseline_fn=None, alpha_logit=None,
+                                device="cuda", **kwargs):
     """Estimate variational lower bounds on mutual information.
 
   Args:
@@ -144,21 +145,22 @@ def estimate_mutual_information(estimator, x, y, critic_fn,
   Returns:
     scalar estimate of mutual information
     """
-    x, y = x.cuda(), y.cuda()
+    x, y = x.to(device), y.to(device)
     scores = critic_fn(x, y)
     if baseline_fn is not None:
         # Some baselines' output is (batch_size, 1) which we remove here.
         log_baseline = torch.squeeze(baseline_fn(y))
     if estimator == 'infonce':
-        mi = infonce_lower_bound(scores)
+        mi = infonce_lower_bound(scores, device=device)
     elif estimator == 'nwj':
-        mi = nwj_lower_bound(scores)
+        mi = nwj_lower_bound(scores, device=device)
     elif estimator == 'tuba':
-        mi = tuba_lower_bound(scores, log_baseline)
+        mi = tuba_lower_bound(scores, log_baseline, device=device)
     elif estimator == 'js':
-        mi = js_lower_bound(scores)
+        mi = js_lower_bound(scores, device=device)
     elif estimator == 'smile':
-        mi = smile_lower_bound(scores, **kwargs)
+        mi = smile_lower_bound(scores, device=device, **kwargs)
     elif estimator == 'dv':
-        mi = dv_upper_lower_bound(scores)
+        mi = dv_upper_lower_bound(scores, device=device)
+
     return mi
